@@ -60,32 +60,51 @@ export async function analyzeFormStructure(imageUri: string): Promise<FormField[
           type: "text",
           text: `Analyze this form image carefully. Identify ALL logical input fields visible in the form.
 
-Return a JSON array of objects. Each object must have:
+Return a JSON object with a "fields" key containing an array of objects. Each object must have:
 - "id": a unique snake_case identifier (e.g., "full_name", "phone_number", "date_of_birth")
 - "label": a human-readable label exactly as shown on the form
 - "type": one of "text", "number", "date", or "email" — choose the best match for the field content
 
 Be thorough — don't miss any fields. Include checkboxes as text fields with expected values like "yes/no".
 
-IMPORTANT: Return ONLY a valid JSON array, no other text. Example:
-[{"id": "full_name", "label": "Full Name", "type": "text"}]`
+Example response:
+{"fields": [{"id": "full_name", "label": "Full Name", "type": "text"}, {"id": "email_address", "label": "Email Address", "type": "email"}]}`
         }
       ]
     }
   ];
 
   try {
-    const result = await groqChat(messages, VISION_MODEL, true);
-    const parsed = JSON.parse(result);
-    // Handle if the model wraps it in an object
+    // Vision models may not support JSON mode well, so we disable it and parse manually
+    const result = await groqChat(messages, VISION_MODEL, false);
+    console.log("Raw Groq vision response:", result);
+    
+    // Try to extract JSON from the response (model may wrap it in markdown code blocks)
+    let jsonStr = result;
+    
+    // Remove markdown code block wrappers if present
+    const codeBlockMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    }
+    
+    const parsed = JSON.parse(jsonStr);
+    
+    // Handle various response formats
     if (Array.isArray(parsed)) return parsed;
     if (parsed.fields && Array.isArray(parsed.fields)) return parsed.fields;
+    // Check for any key that contains an array
+    for (const key of Object.keys(parsed)) {
+      if (Array.isArray(parsed[key])) return parsed[key];
+    }
+    console.error("Unexpected response format:", parsed);
     return [];
   } catch (error) {
     console.error("Failed to analyze form structure:", error);
     return [];
   }
 }
+
 
 export async function getConversationTurn(
   userInput: string,
