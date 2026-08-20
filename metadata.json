@@ -1,6 +1,0 @@
-{
-  "name": "VoiceFill AI",
-  "description": "An AI-powered voice-to-form system that intelligently maps spoken input to structured form fields in real-time.",
-  "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["Voice Input", "Forms", "AI Assistant"]
-}
