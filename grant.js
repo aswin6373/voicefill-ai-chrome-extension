@@ -32,7 +32,7 @@
     grantBtn.classList.add('hidden');
     returnBtn.classList.remove('hidden');
     steps.classList.add('hidden');
-    showStatus('You can close this tab any time.', 'info');
+    showStatus('If the popup still can\'t hear you, reload the extension once in chrome://extensions — Chrome needs to apply the "Record audio" permission.', 'info');
   }
 
   async function isGranted() {

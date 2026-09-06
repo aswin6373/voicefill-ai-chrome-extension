@@ -29,6 +29,7 @@
   let currentTranscript = '';
   let silenceTimeout = null;
   let activeTabId = null;
+  let grantPageOpened = false; // open the grant page at most once per popup session (prevents loop)
 
   // ─── DOM Elements ───
   const $ = (sel) => document.querySelector(sel);
@@ -283,12 +284,19 @@
     rec.onerror = (event) => {
       console.error('[VoiceFill] Speech error:', event.error);
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        // Mic permission denied — popups can't show Chrome's Allow prompt,
-        // so open the persistent grant page (user clicks Allow there).
+        // Mic permission denied — popups can't show Chrome's Allow prompt.
+        // Open the persistent grant page ONCE; after that, show instructions
+        // instead of looping.
         setListeningUI(false);
-        setAiMessage('Microphone access is blocked. I opened a setup page — click "Grant Microphone Access" there, allow it, then come back here.');
         micWarning.classList.remove('hidden');
-        chrome.tabs.create({ url: chrome.runtime.getURL('grant.html'), active: true });
+        if (!grantPageOpened) {
+          grantPageOpened = true;
+          setAiMessage('Microphone access is blocked. I opened a setup page — click "Grant Microphone Access" there, allow it, then come back here.');
+          chrome.tabs.create({ url: chrome.runtime.getURL('grant.html'), active: true });
+        } else {
+          setAiMessage('Chrome is still blocking the mic inside the popup. Click the yellow banner to open the setup page. If it keeps failing, reload the extension in chrome://extensions so the new "Record audio" permission is applied.');
+          showToast('Mic still blocked — see the yellow banner', 'error');
+        }
       } else if (event.error !== 'no-speech') {
         setListeningUI(false);
         showToast('Mic error: ' + event.error, 'error');

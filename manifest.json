@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "audioCapture"
   ],
   "host_permissions": [
     "https://docs.google.com/forms/*"
