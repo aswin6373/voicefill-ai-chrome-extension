@@ -30,11 +30,14 @@
     <div id="settingsPanel" class="settings-panel hidden">
       <div class="settings-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <span>API Key</span>
+        <span>API Keys (both free)</span>
       </div>
-      <input type="password" id="apiKeyInput" placeholder="Enter your Groq API key..." class="settings-input">
-      <button id="saveKeyBtn" class="save-key-btn">Save Key</button>
-      <p class="settings-hint">Get your free API key at <a href="https://console.groq.com" target="_blank">console.groq.com</a></p>
+      <label class="settings-label">Gemini key — agent brain <span class="opt">(ai.google.dev)</span></label>
+      <input type="password" id="geminiKeyInput" placeholder="AIza..." class="settings-input">
+      <label class="settings-label">Groq key — Whisper hearing + fallback <span class="opt">(console.groq.com)</span></label>
+      <input type="password" id="groqKeyInput" placeholder="gsk_..." class="settings-input">
+      <button id="saveKeyBtn" class="save-key-btn">Save Keys</button>
+      <p class="settings-hint">Gemini powers the agent. Groq powers accurate Whisper speech-to-text and works as the fallback brain. At least one is required.</p>
     </div>
 
     <!-- Not on Google Forms warning -->

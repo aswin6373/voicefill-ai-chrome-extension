@@ -8,6 +8,8 @@
 
   // ─── Config ───
   const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+  const GROQ_STT_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
+  const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
   // Groq retires model IDs over time — resolve an available model at runtime.
   const MODEL_PREFS = [
     'llama-3.3-70b-versatile',
@@ -18,9 +20,21 @@
   ];
   let TEXT_MODEL = MODEL_PREFS[0];
   let modelResolved = false;
+  // Groq Whisper STT models (fallback chain)
+  let sttModel = 'whisper-large-v3-turbo';
 
   // ─── State ───
-  let apiKey = '';
+  let apiKey = '';        // Groq key (Whisper STT + fallback brain)
+  let geminiKey = '';     // Gemini key (agent brain)
+  let geminiModel = null; // resolved Gemini model
+  let sttMode = 'whisper';// 'whisper' (Groq STT) | 'webspeech' (Chrome built-in)
+  let agentHistory = [];  // Gemini agent conversation memory
+  let mediaStream = null;
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let recordingTimer = null;
+  let recordingStartedAt = 0;
+  let isWhisperSession = false;
   let fields = [];
   let formValues = {};
   let isListening = false;
@@ -36,7 +50,8 @@
   const settingsBtn = $('#settingsBtn');
   const resetBtn = $('#resetBtn');
   const settingsPanel = $('#settingsPanel');
-  const apiKeyInput = $('#apiKeyInput');
+  const geminiKeyInput = $('#geminiKeyInput');
+  const groqKeyInput = $('#groqKeyInput');
   const saveKeyBtn = $('#saveKeyBtn');
   const notOnForm = $('#notOnForm');
   const mainContent = $('#mainContent');
@@ -61,12 +76,17 @@
 
   // ─── Init ───
   async function init() {
-    // Load API key
-    const stored = await chrome.storage.local.get(['groqApiKey']);
+    // Load API keys
+    const stored = await chrome.storage.local.get(['groqApiKey', 'geminiApiKey', 'sttMode']);
     if (stored.groqApiKey) {
       apiKey = stored.groqApiKey;
-      apiKeyInput.value = '••••••••••••••••';
+      groqKeyInput.value = '••••••••••••••••';
     }
+    if (stored.geminiApiKey) {
+      geminiKey = stored.geminiApiKey;
+      geminiKeyInput.value = '••••••••••••••••';
+    }
+    sttMode = stored.sttMode === 'webspeech' ? 'webspeech' : 'whisper';
 
     // Check if we're on a Google Form
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -127,25 +147,39 @@
   function toggleSettings() {
     settingsPanel.classList.toggle('hidden');
     if (!settingsPanel.classList.contains('hidden')) {
-      apiKeyInput.focus();
+      (geminiKeyInput.value ? groqKeyInput : geminiKeyInput).focus();
     }
   }
 
   async function saveApiKey() {
-    const key = apiKeyInput.value.trim();
-    if (!key || key === '••••••••••••••••') {
-      showToast('Please enter a valid API key', 'error');
+    const MASK = '••••••••••••••••';
+    const geminiVal = geminiKeyInput.value.trim();
+    const groqVal = groqKeyInput.value.trim();
+    const updates = {};
+
+    if (geminiVal && geminiVal !== MASK) {
+      geminiKey = geminiVal;
+      updates.geminiApiKey = geminiVal;
+      geminiKeyInput.value = MASK;
+      geminiModel = null; // re-resolve model for the new key
+    }
+    if (groqVal && groqVal !== MASK) {
+      apiKey = groqVal;
+      updates.groqApiKey = groqVal;
+      groqKeyInput.value = MASK;
+    }
+    if (!geminiKey && !apiKey) {
+      showToast('Please enter at least one API key', 'error');
       return;
     }
-    apiKey = key;
-    await chrome.storage.local.set({ groqApiKey: key });
-    apiKeyInput.value = '••••••••••••••••';
+    if (Object.keys(updates).length) await chrome.storage.local.set(updates);
     settingsPanel.classList.add('hidden');
-    showToast('API key saved!', 'success');
 
     // If we have fields but haven't started, enable mic
     if (fields.length > 0) {
       micBtn.disabled = false;
+      const brain = geminiKey ? 'Gemini agent' : 'Groq';
+      showToast(`Keys saved — ${brain} mode`, 'success');
     }
   }
 
@@ -168,10 +202,10 @@
         setAiMessage(msg);
         speak(msg);
 
-        if (apiKey) {
+        if (apiKey || geminiKey) {
           micBtn.disabled = false;
         } else {
-          setAiMessage(`Found ${fields.length} questions! Please set your Groq API key first (click ⚙️), then start talking.`);
+          setAiMessage(`Found ${fields.length} questions! Please set an API key first (click ⚙️ — Gemini for the agent, Groq for Whisper hearing), then start talking.`);
           micBtn.disabled = true;
         }
       } else {
@@ -228,10 +262,13 @@
   }
 
   // ─── Speech Recognition ───
+  // Two engines:
+  //   'whisper'   — record with MediaRecorder → Groq Whisper API (accurate)
+  //   'webspeech' — Chrome built-in SpeechRecognition (fallback, instant)
   function createRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      showToast('Speech recognition not supported', 'error');
+      setAiMessage('Speech recognition is not supported in this browser. Please use Google Chrome.');
       return null;
     }
 
@@ -274,7 +311,7 @@
     rec.onend = () => {
       // Only auto-process if we didn't manually stop
       if (isListening && currentTranscript.trim()) {
-        processConversation(currentTranscript);
+        routeToBrain(currentTranscript);
       }
       setListeningUI(false);
     };
@@ -303,7 +340,6 @@
 
     return rec;
   }
-
   function toggleListening() {
     if (isListening) {
       stopAndProcess();
@@ -312,17 +348,35 @@
     }
   }
 
-  function startListening() {
+  async function startListening() {
     if (isProcessing) return;
-    
+
     // Cancel TTS
     speechSynthesis.cancel();
 
-    recognition = createRecognition();
-    if (!recognition) return;
-
     currentTranscript = '';
     transcriptText.textContent = 'Listening... speak now';
+
+    // Whisper mode: record real audio, transcribe via Groq
+    if (sttMode === 'whisper' && apiKey) {
+      try {
+        await startWhisperRecording();
+        isListening = true;
+        setListeningUI(true);
+        return;
+      } catch (err) {
+        console.error('[VoiceFill] Whisper recording failed, falling back to WebSpeech:', err);
+        if (String(err).includes('NotAllowedError') || String(err).includes('not allowed') || String(err).includes('Permission')) {
+          handleMicDenied();
+          return;
+        }
+        // fall through to webspeech
+      }
+    }
+
+    // WebSpeech mode (fallback)
+    recognition = createRecognition();
+    if (!recognition) return;
 
     try {
       recognition.start();
@@ -330,24 +384,127 @@
       setListeningUI(true);
     } catch (err) {
       console.error('[VoiceFill] Start error:', err);
-      showToast('Could not start microphone', 'error');
+      setAiMessage('Could not start the microphone. Try again, or click the yellow banner if the issue persists.');
     }
   }
 
-  function stopAndProcess() {
-    const transcript = currentTranscript;
-    isListening = false;
-    
-    if (recognition) {
-      try { recognition.stop(); } catch {}
-      recognition = null;
+  // ─── Whisper STT recording ───
+  async function startWhisperRecording() {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(mediaStream);
+    audioChunks = [];
+    recordingStartedAt = Date.now();
+
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = () => { /* handled after transcription */ };
+    mediaRecorder.start(250); // gather chunks every 250ms
+
+    // Hard cap at 60s to protect the free tier
+    recordingTimer = setTimeout(() => {
+      if (isListening) { console.log('[VoiceFill] 60s max recording reached'); stopAndProcess(); }
+    }, 60000);
+  }
+
+  async function stopWhisperRecording() {
+    if (recordingTimer) { clearTimeout(recordingTimer); recordingTimer = null; }
+    const elapsed = Date.now() - recordingStartedAt;
+    const chunks = audioChunks;
+    const mimeType = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
+    const stream = mediaStream;
+
+    const stopped = new Promise((resolve) => {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') return resolve();
+      mediaRecorder.onstop = () => resolve();
+      try { mediaRecorder.stop(); } catch { resolve(); }
+    });
+    await stopped;
+
+    if (stream) { stream.getTracks().forEach(t => t.stop()); }
+    mediaStream = null;
+    mediaRecorder = null;
+    audioChunks = [];
+
+    // Discard micro-recordings (accidental click / instant stop of an
+    // auto-restarted session) — avoids wasting free-tier Whisper calls.
+    if (elapsed < 600 || !chunks.length) return '';
+    return transcribeWithGroq(new Blob(chunks, { type: mimeType }));
+  }
+
+  async function transcribeWithGroq(audioBlob) {
+    if (!apiKey) throw new Error('No Groq key for Whisper');
+    const form = new FormData();
+    // Whisper requires a filename with a known extension; webm is accepted by Groq
+    form.append('file', audioBlob, 'recording.webm');
+    form.append('model', sttModel);
+    form.append('response_format', 'json');
+    form.append('temperature', '0');
+    form.append('language', 'en');
+
+    const res = await fetch(GROQ_STT_URL, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      body: form,
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      // Retired STT model — try the standard whisper once
+      if (/model.*not.*found/i.test(errText) && sttModel !== 'whisper-large-v3') {
+        sttModel = 'whisper-large-v3';
+        return transcribeWithGroq(audioBlob);
+      }
+      throw new Error(`Whisper API error ${res.status}: ${errText}`);
     }
+    const data = await res.json();
+    return (data.text || '').trim();
+  }
+
+  function stopAndProcess() {
+    const wasListening = isListening;
+    isListening = false;
+
     if (silenceTimeout) clearTimeout(silenceTimeout);
 
     setListeningUI(false);
 
+    if (sttMode === 'whisper' && mediaRecorder) {
+      // Whisper path: stop recording, transcribe, then process
+      const recording = stopWhisperRecording();
+      if (!wasListening) return;
+      recording.then(transcript => {
+        if (transcript && transcript.trim()) {
+          transcriptText.textContent = transcript;
+          routeToBrain(transcript);
+        } else {
+          console.log('[VoiceFill] Whisper returned empty transcript');
+        }
+      }).catch(err => {
+        console.error('[VoiceFill] Transcription error:', err);
+        setAiMessage('Sorry, I could not transcribe that audio. Try speaking a bit longer.');
+      });
+      return;
+    }
+
+    // WebSpeech path
+    const transcript = currentTranscript;
+    if (recognition) {
+      try { recognition.stop(); } catch {}
+      recognition = null;
+    }
+
     if (transcript.trim() && !isProcessing) {
-      processConversation(transcript);
+      routeToBrain(transcript);
+    }
+  }
+
+  function handleMicDenied() {
+    setListeningUI(false);
+    micWarning.classList.remove('hidden');
+    if (!grantPageOpened) {
+      grantPageOpened = true;
+      setAiMessage('Microphone access is blocked. I opened a setup page — click "Grant Microphone Access" there, allow it, then come back here.');
+      chrome.tabs.create({ url: chrome.runtime.getURL('grant.html'), active: true });
+    } else {
+      setAiMessage('Chrome is still blocking the mic inside the popup. Click the yellow banner to open the setup page. If it keeps failing, reload the extension in chrome://extensions so the new "Record audio" permission is applied.');
     }
   }
 
@@ -373,6 +530,10 @@
   // ─── AI Conversation ───
   async function processConversation(text) {
     if (!text.trim() || isProcessing) return;
+    if (!apiKey) {
+      setAiMessage('Please set your Groq API key first (click ⚙️) — it powers Whisper hearing and the fallback brain.');
+      return;
+    }
 
     isProcessing = true;
     micBtn.disabled = true;
@@ -560,7 +721,206 @@ Respond with ONLY valid JSON.`
     throw new Error('Could not parse JSON response');
   }
 
-  // ─── Content Script Communication ───
+  // ─── Brain routing ───
+  function routeToBrain(text) {
+    if (geminiKey) return runAgentTurn(text);
+    return processConversation(text);
+  }
+
+  async function runAgentTurn(text) {
+    if (!text.trim() || isProcessing) return;
+
+    isProcessing = true;
+    micBtn.disabled = true;
+    setThinking(true);
+    setAiMessage('');
+
+    try {
+      const reply = await runGeminiAgent(text);
+
+      const isComplete = fields.length > 0 && fields.every(f => !!formValues[f.id]);
+      if (isComplete) {
+        setAiMessage("All fields are filled! Review the form and click Submit when you're ready. 🎉");
+        speak("All fields are filled! Review the form and submit when ready.");
+      } else {
+        setAiMessage(reply);
+        speak(reply, () => {
+          setTimeout(() => {
+            if (!isProcessing && !isListening) startListening();
+          }, 400);
+        });
+      }
+    } catch (err) {
+      console.error('[VoiceFill] Agent error:', err);
+      setAiMessage("Sorry, I had trouble processing that. Please try again.");
+    }
+
+    isProcessing = false;
+    micBtn.disabled = false;
+    setThinking(false);
+  }
+
+  // ─── Gemini Agent (function-calling) ───
+  const GEMINI_SYSTEM_PROMPT = `You are "VoiceFill", a friendly voice agent that fills Google Forms by talking with the user.
+
+RULES:
+1. To store an answer, call the fill_fields tool with a map of fieldId -> value. Never invent field IDs.
+2. Match radio/checkbox answers to the EXACT options provided. For checkboxes with multiple selections, join values with a comma.
+3. Clean up speech-to-text errors: emails ("john at gmail dot com" -> john@gmail.com), phone digits ("nine eight seven" -> 987), dates ("January 15 2000" -> 2000-01-15). Capitalize names ("john doe" -> "John Doe").
+4. After filling, briefly confirm what you saved, then ask for the NEXT missing field in a natural way.
+5. Keep replies under 2 short sentences — they are spoken aloud.
+6. When every field is filled, congratulate the user and tell them to review the form and click Submit.
+7. If the user's message is unclear or empty, politely ask them to repeat. Never invent data.
+8. Use get_progress if you lose track. Use scan_form only if the provided field list seems wrong.`;
+
+  const GEMINI_TOOLS = [{
+    functionDeclarations: [
+      {
+        name: 'fill_fields',
+        description: 'Fill one or more form fields with values. Only use field IDs from the provided field list.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            values: { type: 'OBJECT', description: 'Map of fieldId to the value to fill, e.g. {"field_1_name": "John Doe"}' },
+          },
+          required: ['values'],
+        },
+      },
+      {
+        name: 'get_progress',
+        description: 'Get how many fields are filled and which are still missing.',
+        parameters: { type: 'OBJECT', properties: {}, required: [] },
+      },
+      {
+        name: 'scan_form',
+        description: 'Rescan the Google Form and return all question fields.',
+        parameters: { type: 'OBJECT', properties: {}, required: [] },
+      },
+    ],
+  }];
+
+  function buildFormStateText() {
+    return fields.map(f => {
+      let line = `- ${f.id}: "${f.label}" (type: ${f.type})`;
+      if (f.options?.length) line += ` [options: ${f.options.join(', ')}]`;
+      line += formValues[f.id] ? ` [FILLED: "${formValues[f.id]}"]` : ' [EMPTY]';
+      return line;
+    }).join('\n') || '(no fields scanned yet)';
+  }
+
+  async function resolveGeminiModel() {
+    if (geminiModel) return geminiModel;
+    const res = await fetch(`${GEMINI_API_BASE}/models?key=${encodeURIComponent(geminiKey)}`);
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`Gemini key error ${res.status}: ${t.slice(0, 120)}`);
+    }
+    const data = await res.json();
+    const usable = (data.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map(m => m.name.replace(/^models\//, ''))
+      .filter(n => !/tts|image|audio|embedding|aqa|video|live|native|veo|imagen|learnlm|gemma|guard/i.test(n));
+    const prefs = [
+      /^gemini-3\.5-flash-lite/, /^gemini-[\d.]+-flash-lite/, /^gemini-[\d.]+-flash$/,
+      /^gemini-.*flash/, /^gemini-/,
+    ];
+    for (const p of prefs) {
+      const hit = usable.find(n => p.test(n));
+      if (hit) { geminiModel = hit; break; }
+    }
+    if (!geminiModel) throw new Error('No usable Gemini model on this key');
+    console.log('[VoiceFill] Using Gemini model:', geminiModel);
+    return geminiModel;
+  }
+
+  async function executeGeminiTool(name, args) {
+    if (name === 'fill_fields') {
+      const values = args.values || {};
+      const resp = await sendToContentScript({ type: 'FILL_MULTIPLE', values });
+      formValues = { ...formValues, ...values };
+      renderFields();
+      updateProgress();
+      return resp || { success: false };
+    }
+    if (name === 'get_progress') {
+      const filled = fields.filter(f => !!formValues[f.id]).length;
+      return {
+        filled,
+        total: fields.length,
+        missing: fields.filter(f => !formValues[f.id]).map(f => f.label),
+      };
+    }
+    if (name === 'scan_form') {
+      const resp = await sendToContentScript({ type: 'SCAN_FORM' });
+      if (resp?.success) {
+        fields = resp.fields;
+        renderFields();
+        updateProgress();
+      }
+      return { success: true, fields };
+    }
+    return { error: `Unknown tool: ${name}` };
+  }
+
+  async function runGeminiAgent(userText) {
+    const model = await resolveGeminiModel();
+
+    if (agentHistory.length === 0) {
+      agentHistory.push({
+        role: 'user',
+        parts: [{ text: `FORM FIELDS (the only IDs you may fill):\n${buildFormStateText()}\n\nConversation start. Greet briefly and ask for the first empty field.` }],
+      });
+    }
+    agentHistory.push({ role: 'user', parts: [{ text: `User said: "${userText}"` }] });
+
+    let reply = '';
+    for (let step = 0; step < 5; step++) {
+      const res = await fetch(`${GEMINI_API_BASE}/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: GEMINI_SYSTEM_PROMPT }] },
+          contents: agentHistory,
+          tools: GEMINI_TOOLS,
+          generationConfig: { temperature: 0.2 },
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        if (/model.*not.*found|not found/i.test(errText)) geminiModel = null; // re-resolve next turn
+        throw new Error(`Gemini API error ${res.status}: ${errText.slice(0, 140)}`);
+      }
+      const data = await res.json();
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const calls = parts.filter(p => p.functionCall).map(p => p.functionCall);
+      const textOut = parts.filter(p => p.text).map(p => p.text).join('');
+
+      if (calls.length > 0) {
+        agentHistory.push({ role: 'model', parts });
+        const responseParts = [];
+        for (const call of calls) {
+          let result;
+          try {
+            result = await executeGeminiTool(call.name, call.args || {});
+          } catch (e) {
+            result = { error: String(e.message || e) };
+          }
+          responseParts.push({ functionResponse: { name: call.name, response: { result } } });
+        }
+        agentHistory.push({ role: 'user', parts: responseParts });
+        continue; // let the model react to the tool results
+      }
+
+      reply = textOut || "I didn't catch that. Could you say it again?";
+      agentHistory.push({ role: 'model', parts });
+      break;
+    }
+
+    // Trim memory (keep the last ~12 exchanges)
+    while (agentHistory.length > 24) agentHistory.shift();
+    return reply || "I didn't catch that. Could you say it again?";
+  }
+
   function sendToContentScript(message) {
     return new Promise((resolve, reject) => {
       if (!activeTabId) {
@@ -618,7 +978,12 @@ Respond with ONLY valid JSON.`
     isListening = false;
     isProcessing = false;
     currentTranscript = '';
-    
+    agentHistory = [];
+
+    if (recordingTimer) { clearTimeout(recordingTimer); recordingTimer = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    mediaRecorder = null;
+    audioChunks = [];
     if (recognition) {
       try { recognition.stop(); } catch {}
       recognition = null;
