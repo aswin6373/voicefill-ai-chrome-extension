@@ -5,19 +5,18 @@
   <title>VoiceFill AI — Microphone Access</title>
   <style>
     :root {
-      --bg-primary: #0a0e1a;
-      --bg-secondary: #111827;
-      --bg-card: #1a1f2e;
-      --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.3);
-      --accent-dark: #2563eb;
-      --success: #10b981;
-      --error: #ef4444;
-      --text-primary: #f1f5f9;
-      --text-secondary: #94a3b8;
-      --text-muted: #475569;
-      --border: #1e293b;
-      --radius: 16px;
+      --bg-primary: #070b14;
+      --bg-card: rgba(255, 255, 255, 0.055);
+      --border: rgba(255, 255, 255, 0.09);
+      --accent: #6366f1;
+      --accent-2: #8b5cf6;
+      --accent-glow: rgba(99, 102, 241, 0.35);
+      --success: #34d399;
+      --error: #f87171;
+      --warning: #fbbf24;
+      --text-primary: #eef2ff;
+      --text-secondary: #9aa3c0;
+      --text-muted: #565f7e;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -29,76 +28,102 @@
       color: var(--text-primary);
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       padding: 24px;
+      overflow: hidden;
+      position: relative;
     }
+    .bg-fx { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+    .orb {
+      position: absolute; border-radius: 50%; filter: blur(70px); opacity: 0.5;
+    }
+    .orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(99,102,241,0.5), transparent 70%); top: -120px; right: -100px; }
+    .orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, rgba(139,92,246,0.4), transparent 70%); bottom: -120px; left: -100px; }
     .card {
-      width: 100%;
-      max-width: 460px;
+      position: relative; z-index: 1;
+      width: 100%; max-width: 470px;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 36px 32px;
+      border-radius: 26px;
+      padding: 40px 36px;
       text-align: center;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
     }
     .icon-wrap {
-      width: 88px; height: 88px;
-      margin: 0 auto 20px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(59,130,246,0.05));
+      width: 92px; height: 92px;
+      margin: 0 auto 22px;
+      border-radius: 28px;
+      background: linear-gradient(135deg, rgba(99,102,241,0.16), rgba(139,92,246,0.08));
+      border: 1px solid var(--border);
       display: flex; align-items: center; justify-content: center;
       color: var(--accent);
-      animation: pulse 2s infinite;
+      animation: pulse 2.4s infinite;
     }
     .icon-wrap.success { color: var(--success); animation: none; }
     .icon-wrap.error { color: var(--error); animation: none; }
     @keyframes pulse {
       0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
-      50% { box-shadow: 0 0 0 14px rgba(59,130,246,0); }
+      50% { box-shadow: 0 0 0 16px rgba(99,102,241,0); }
     }
-    h1 { font-size: 22px; font-weight: 800; margin-bottom: 10px; }
-    p.desc { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 24px; }
+    h1 {
+      font-family: 'Space Grotesk', 'Inter', sans-serif;
+      font-size: 24px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 10px;
+    }
+    p.desc { font-size: 14px; color: var(--text-secondary); line-height: 1.65; margin-bottom: 26px; }
     button.primary {
       width: 100%;
-      padding: 15px;
+      padding: 16px;
       border: none;
-      border-radius: 14px;
-      background: linear-gradient(135deg, var(--accent-dark), var(--accent));
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: white;
       font-size: 15px;
-      font-weight: 800;
+      font-weight: 700;
+      font-family: inherit;
       cursor: pointer;
       transition: all .25s ease;
-      box-shadow: 0 6px 20px var(--accent-glow);
+      box-shadow: 0 8px 24px var(--accent-glow);
     }
-    button.primary:hover { transform: translateY(-2px); box-shadow: 0 8px 28px var(--accent-glow); }
+    button.primary:hover { transform: translateY(-2px); box-shadow: 0 12px 32px var(--accent-glow); }
     button.primary:disabled { opacity: .5; cursor: wait; transform: none; }
     button.ghost {
       margin-top: 12px;
       width: 100%;
-      padding: 13px;
+      padding: 14px;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      background: var(--bg-secondary);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.035);
       color: var(--text-primary);
       font-size: 14px;
-      font-weight: 700;
+      font-weight: 600;
+      font-family: inherit;
       cursor: pointer;
       transition: all .25s ease;
     }
     button.ghost:hover { border-color: var(--accent); }
-    .status { margin-top: 18px; font-size: 13px; line-height: 1.6; display: none; }
+    .status { margin-top: 18px; font-size: 13px; line-height: 1.65; display: none; }
     .status.show { display: block; }
     .status.error { color: var(--error); }
     .status.info { color: var(--text-muted); }
     .hidden { display: none !important; }
-    .steps { text-align: left; font-size: 12px; color: var(--text-muted); margin-top: 22px; line-height: 1.8; }
+    .steps {
+      text-align: left; font-size: 12.5px; color: var(--text-muted);
+      margin-top: 24px; line-height: 1.9;
+      border-top: 1px solid var(--border); padding-top: 20px;
+    }
     .steps b { color: var(--text-secondary); }
   </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
+  <div class="bg-fx" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+  </div>
   <div class="card">
     <div class="icon-wrap" id="iconWrap">
-      <svg id="micSvg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-      <svg id="checkSvg" class="hidden" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      <svg id="micSvg" width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <svg id="checkSvg" class="hidden" width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
     </div>
     <h1 id="title">Allow microphone access</h1>
     <p class="desc" id="desc">VoiceFill needs one-time permission to hear your answers. This page stays open, so the "Allow" button will work here.</p>
