@@ -198,7 +198,9 @@
         updateProgress();
 
         const fieldNames = fields.map(f => f.label).join(', ');
-        const msg = `Found ${fields.length} questions: ${fieldNames}. Click the microphone and start telling me your answers!`;
+        const msg = fields.length > 1
+          ? `Hi there! I found ${fields.length} questions — ${fieldNames}. Just hit the mic and tell me your answers like you're talking to a friend. I'll fill everything in and check details with you as we go!`
+          : `Hi! I found one question: ${fieldNames}. Hit the mic and tell me your answer!`;
         setAiMessage(msg);
         speak(msg);
 
@@ -332,7 +334,10 @@
           setAiMessage('Chrome is still blocking the mic inside the popup. Click the yellow banner to open the setup page. If it keeps failing, reload the extension in chrome://extensions so the new "Record audio" permission is applied.');
           showToast('Mic still blocked — see the yellow banner', 'error');
         }
-      } else if (event.error !== 'no-speech') {
+      } else if (event.error === 'no-speech') {
+        setListeningUI(false);
+        setAiMessage("I didn't hear anything — click the mic again and speak when you're ready.");
+      } else {
         setListeningUI(false);
         showToast('Mic error: ' + event.error, 'error');
       }
@@ -399,14 +404,94 @@
     mediaRecorder.onstop = () => { /* handled after transcription */ };
     mediaRecorder.start(250); // gather chunks every 250ms
 
+    startSilenceDetection(mediaStream);
+
     // Hard cap at 60s to protect the free tier
     recordingTimer = setTimeout(() => {
       if (isListening) { console.log('[VoiceFill] 60s max recording reached'); stopAndProcess(); }
     }, 60000);
   }
 
+  // ─── Silence detection: auto-finish "Finish Talking" when the user goes quiet ───
+  let audioCtx = null;
+  let analyserNode = null;
+  let silencePoll = null;
+  let speechDetected = false;
+  let silenceSince = 0;
+
+  function startSilenceDetection(stream) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyserNode = audioCtx.createAnalyser();
+      analyserNode.fftSize = 512;
+      source.connect(analyserNode);
+
+      const buf = new Uint8Array(analyserNode.fftSize);
+      const RMS_THRESHOLD = 8;      // below this = silence
+      const SILENCE_STOP_MS = 2500; // silence after speech -> auto-stop & process
+      const NO_SPEECH_MS = 7000;    // no speech at all -> cancel quietly
+      const GRACE_MS = 500;         // ignore mic ramp-up noise
+
+      speechDetected = false;
+      silenceSince = Date.now();
+      const startedAt = Date.now();
+
+      silencePoll = setInterval(() => {
+        if (!analyserNode || !isListening) return;
+        analyserNode.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const v = buf[i] - 128; sum += v * v; }
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+        if (rms > RMS_THRESHOLD) {
+          speechDetected = true;
+          silenceSince = now;
+        }
+        if (now - startedAt < GRACE_MS) return;
+        const silentFor = now - silenceSince;
+        if (speechDetected && silentFor > SILENCE_STOP_MS) {
+          console.log('[VoiceFill] Silence detected after speech — finishing turn automatically');
+          stopAndProcess();
+        } else if (!speechDetected && now - startedAt > NO_SPEECH_MS) {
+          console.log('[VoiceFill] No speech detected — cancelling recording');
+          cancelWhisperRecording();
+        }
+      }, 250);
+    } catch (e) {
+      // Analyser unavailable (e.g. mocked stream) — timer-only recording, still works
+      console.log('[VoiceFill] Silence detection unavailable:', e.message);
+    }
+  }
+
+  function stopSilenceDetection() {
+    if (silencePoll) { clearInterval(silencePoll); silencePoll = null; }
+    if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+    analyserNode = null;
+  }
+
+  async function cancelWhisperRecording() {
+    if (recordingTimer) { clearTimeout(recordingTimer); recordingTimer = null; }
+    stopSilenceDetection();
+    const stream = mediaStream;
+    await new Promise((resolve) => {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') return resolve();
+      mediaRecorder.onstop = () => resolve();
+      try { mediaRecorder.stop(); } catch { resolve(); }
+    });
+    if (stream) { stream.getTracks().forEach(t => t.stop()); }
+    mediaStream = null;
+    mediaRecorder = null;
+    audioChunks = [];
+    isListening = false;
+    setListeningUI(false);
+    setAiMessage("I didn't hear anything — click the mic again and speak when you're ready.");
+  }
+
   async function stopWhisperRecording() {
     if (recordingTimer) { clearTimeout(recordingTimer); recordingTimer = null; }
+    stopSilenceDetection();
     const elapsed = Date.now() - recordingStartedAt;
     const chunks = audioChunks;
     const mimeType = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
@@ -476,6 +561,7 @@
           routeToBrain(transcript);
         } else {
           console.log('[VoiceFill] Whisper returned empty transcript');
+          setAiMessage("I didn't catch any words there — click the mic and try speaking a bit closer.");
         }
       }).catch(err => {
         console.error('[VoiceFill] Transcription error:', err);
@@ -624,16 +710,22 @@
     const messages = [
       {
         role: 'system',
-        content: `You are "VoiceFill", a friendly and precise form-filling AI assistant having a voice conversation.
+        content: `You are "VoiceFill", a warm, human-sounding voice agent helping fill a form over a phone-like conversation.
 
-CRITICAL RULES:
+SPEAK LIKE A HUMAN:
+- Contractions, friendly tone, 1-2 short sentences. Sound like a helpful person, not a computer.
+
+ACCURACY FIRST:
+- Only put values in "extracted" when you are CONFIDENT what the user said.
+- If the speech is garbled, ambiguous, or unsure (unclear spelling, mumbled email, vague choice), leave "extracted" EMPTY and use "reply" to ask ONE short natural clarifying question ("Sorry, was that Jon or John?").
+- For radio/checkbox fields with options, match the user's answer to the EXACT available options.
+
+HARD RULES:
 1. You can ONLY extract data for these specific field IDs: ${fields.map(f => f.id).join(', ')}
 2. NEVER invent or ask about fields that are NOT in the list above
 3. The "extracted" object must ONLY contain keys from the field ID list above
-4. Always confirm what you extracted, then ask for the NEXT empty field
-5. Keep replies under 2-3 short sentences for TTS
-6. If user says "start" or "hello", greet them and ask for the first empty field
-7. For radio/checkbox fields with options, match the user's answer to available options
+4. When you fill something, confirm what you saved in "reply", then ask for the NEXT empty field
+5. If user says "start" or "hello", greet them and ask for the first empty field
 
 You MUST respond with ONLY valid JSON in this exact format:
 {"extracted": {}, "reply": "your response", "isComplete": false, "clarifications": []}`
@@ -761,17 +853,24 @@ Respond with ONLY valid JSON.`
   }
 
   // ─── Gemini Agent (function-calling) ───
-  const GEMINI_SYSTEM_PROMPT = `You are "VoiceFill", a friendly voice agent that fills Google Forms by talking with the user.
+  const GEMINI_SYSTEM_PROMPT = `You are "VoiceFill", a warm, human-sounding voice agent that fills Google Forms by having a natural conversation.
 
-RULES:
-1. To store an answer, call the fill_fields tool with a map of fieldId -> value. Never invent field IDs.
-2. Match radio/checkbox answers to the EXACT options provided. For checkboxes with multiple selections, join values with a comma.
-3. Clean up speech-to-text errors: emails ("john at gmail dot com" -> john@gmail.com), phone digits ("nine eight seven" -> 987), dates ("January 15 2000" -> 2000-01-15). Capitalize names ("john doe" -> "John Doe").
-4. After filling, briefly confirm what you saved, then ask for the NEXT missing field in a natural way.
-5. Keep replies under 2 short sentences — they are spoken aloud.
-6. When every field is filled, congratulate the user and tell them to review the form and click Submit.
-7. If the user's message is unclear or empty, politely ask them to repeat. Never invent data.
-8. Use get_progress if you lose track. Use scan_form only if the provided field list seems wrong.`;
+SPEAK LIKE A HUMAN:
+- Use contractions and a friendly, casual tone. Sound like a helpful person on the phone, not a robot.
+- Keep replies to 1-2 short sentences — they are spoken aloud. Small natural phrases ("Sure thing", "Got it", "Oh, one more thing") are welcome.
+
+ACCURACY & CLARIFICATION (most important):
+1. Only call fill_fields when you are CONFIDENT about what the user said.
+2. If the speech is garbled, ambiguous, or you are unsure (unclear name spelling, mumbled email, vague choice), DO NOT fill anything. Ask ONE short, natural clarifying question instead — e.g. "Sorry, quick check — was that Jon, J-O-N, or John, J-O-H-N?"
+3. For names and emails, repeat back what you saved while filling ("I've got john@docs.com — just say 'change my email' if that's wrong.").
+4. If the user corrects a value you already filled, call fill_fields again with the same field ID and the corrected value.
+
+FORM RULES:
+5. Match radio/checkbox answers to the EXACT options provided. For checkboxes with multiple selections, join values with a comma.
+6. Clean up speech-to-text errors: emails ("john at gmail dot com" -> john@gmail.com), phone digits ("nine eight seven" -> 987), dates ("January 15 2000" -> 2000-01-15). Capitalize names ("john doe" -> "John Doe").
+7. After each fill, briefly confirm what you saved, then ask for the NEXT missing field — one question at a time.
+8. When every field is filled, congratulate the user and tell them to review the form and click Submit.
+9. Never invent data or field IDs. If you lose track, use get_progress. Use scan_form only if the field list seems wrong.`;
 
   const GEMINI_TOOLS = [{
     functionDeclarations: [
@@ -981,6 +1080,7 @@ RULES:
     agentHistory = [];
 
     if (recordingTimer) { clearTimeout(recordingTimer); recordingTimer = null; }
+    stopSilenceDetection();
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     mediaRecorder = null;
     audioChunks = [];
