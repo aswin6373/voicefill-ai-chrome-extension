@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VoiceFill AI — Microphone Access</title>
+  <style>
+    :root {
+      --bg-primary: #0a0e1a;
+      --bg-secondary: #111827;
+      --bg-card: #1a1f2e;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.3);
+      --accent-dark: #2563eb;
+      --success: #10b981;
+      --error: #ef4444;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #475569;
+      --border: #1e293b;
+      --radius: 16px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 460px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 36px 32px;
+      text-align: center;
+    }
+    .icon-wrap {
+      width: 88px; height: 88px;
+      margin: 0 auto 20px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(59,130,246,0.05));
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent);
+      animation: pulse 2s infinite;
+    }
+    .icon-wrap.success { color: var(--success); animation: none; }
+    .icon-wrap.error { color: var(--error); animation: none; }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
+      50% { box-shadow: 0 0 0 14px rgba(59,130,246,0); }
+    }
+    h1 { font-size: 22px; font-weight: 800; margin-bottom: 10px; }
+    p.desc { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 24px; }
+    button.primary {
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent-dark), var(--accent));
+      color: white;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all .25s ease;
+      box-shadow: 0 6px 20px var(--accent-glow);
+    }
+    button.primary:hover { transform: translateY(-2px); box-shadow: 0 8px 28px var(--accent-glow); }
+    button.primary:disabled { opacity: .5; cursor: wait; transform: none; }
+    button.ghost {
+      margin-top: 12px;
+      width: 100%;
+      padding: 13px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all .25s ease;
+    }
+    button.ghost:hover { border-color: var(--accent); }
+    .status { margin-top: 18px; font-size: 13px; line-height: 1.6; display: none; }
+    .status.show { display: block; }
+    .status.error { color: var(--error); }
+    .status.info { color: var(--text-muted); }
+    .hidden { display: none !important; }
+    .steps { text-align: left; font-size: 12px; color: var(--text-muted); margin-top: 22px; line-height: 1.8; }
+    .steps b { color: var(--text-secondary); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-wrap" id="iconWrap">
+      <svg id="micSvg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <svg id="checkSvg" class="hidden" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h1 id="title">Allow microphone access</h1>
+    <p class="desc" id="desc">VoiceFill needs one-time permission to hear your answers. This page stays open, so the "Allow" button will work here.</p>
+
+    <button class="primary" id="grantBtn">Grant Microphone Access</button>
+    <button class="ghost hidden" id="returnBtn">Return to my Google Form →</button>
+
+    <div class="status" id="status"></div>
+
+    <div class="steps" id="steps">
+      <b>What happens next:</b><br>
+      1. Click the button above<br>
+      2. Chrome asks "<b>Allow microphone?</b>" → click <b>Allow</b><br>
+      3. Come back to your form — you're set forever
+    </div>
+  </div>
+  <script src="grant.js"></script>
+</body>
+</html>

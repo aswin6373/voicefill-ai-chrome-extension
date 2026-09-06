@@ -37,7 +37,7 @@
       // Determine field type by looking at input elements inside
       let type = 'text';
       let inputSelector = '';
-      
+
       // Short answer (text input)
       const textInput = block.querySelector('input[type="text"]');
       // Long answer (textarea)
@@ -48,17 +48,23 @@
       const checkboxes = block.querySelectorAll('[role="checkbox"]');
       // Dropdown
       const dropdown = block.querySelector('[role="listbox"]');
-      // Date input
-      const dateInput = block.querySelector('input[type="date"]') 
+      // Date input: only treat as date when there is REAL date structure
+      // (a native date input, an explicit data-input-type, or multiple part
+      // inputs labeled day/month/year). Never guess from the label text alone,
+      // otherwise questions like "describe your perfect date idea" break.
+      const allInputs = block.querySelectorAll('input');
+      const partLabels = Array.from(allInputs).map(i => (i.getAttribute('aria-label') || '') + ' ' + (i.getAttribute('placeholder') || ''));
+      const datePartCount = partLabels.filter(l => /day|month|year|dd|mm|yyyy/i.test(l)).length;
+      const dateInput = block.querySelector('input[type="date"]')
         || block.querySelector('[data-input-type="date"]')
-        || (label.toLowerCase().includes('date') ? block.querySelector('input') : null);
+        || (allInputs.length >= 2 && datePartCount >= 2 ? allInputs[0] : null);
       // Email
       const emailInput = label.toLowerCase().includes('email') ? textInput : null;
 
       if (emailInput) {
         type = 'email';
         inputSelector = 'email';
-      } else if (dateInput && label.toLowerCase().includes('date')) {
+      } else if (dateInput) {
         type = 'date';
         inputSelector = 'date';
       } else if (textInput) {
@@ -236,21 +242,33 @@
 
         case 'radio': {
           const radios = block.querySelectorAll('[role="radio"]');
-          const valueLower = value.toLowerCase().trim();
-          
+          const norm = s => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+          const valueN = norm(value);
+
+          // 1. Exact match first (never falls through to a substring hit)
           for (const radio of radios) {
-            const optText = radio.textContent.trim().toLowerCase();
-            if (optText === valueLower || optText.includes(valueLower) || valueLower.includes(optText)) {
+            if (norm(radio.textContent) === valueN) {
               radio.click();
               console.log(`[VoiceFill] Selected radio "${field.label}" -> "${value}"`);
               return true;
             }
           }
-          // Fuzzy match - try partial
+          // 2. Whole-phrase containment (long enough to be unambiguous)
+          if (valueN.length >= 4) {
+            for (const radio of radios) {
+              const t = norm(radio.textContent);
+              if (t && t.includes(valueN)) {
+                radio.click();
+                console.log(`[VoiceFill] Selected radio "${field.label}" -> "${value}"`);
+                return true;
+              }
+            }
+          }
+          // 3. Word-boundary fuzzy match — "female" must never match "male"
+          const words = valueN.split(' ').filter(w => w.length > 2);
           for (const radio of radios) {
-            const optText = radio.textContent.trim().toLowerCase();
-            const words = valueLower.split(/\s+/);
-            if (words.some(w => optText.includes(w))) {
+            const t = norm(radio.textContent);
+            if (t && words.some(w => new RegExp(`\\b${w}\\b`).test(t))) {
               radio.click();
               console.log(`[VoiceFill] Fuzzy selected radio "${field.label}" -> "${radio.textContent.trim()}"`);
               return true;
@@ -261,18 +279,21 @@
 
         case 'checkbox': {
           const checkboxes = block.querySelectorAll('[role="checkbox"]');
-          const valueLower = value.toLowerCase().trim();
-          const selectedValues = valueLower.split(/[,;]+/).map(v => v.trim());
+          const norm = s => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+          const selectedValues = value.split(/[,;]+/).map(v => norm(v)).filter(Boolean);
           let matched = false;
-          
+
           for (const cb of checkboxes) {
-            const optText = cb.textContent.trim().toLowerCase();
-            if (selectedValues.some(sv => optText.includes(sv) || sv.includes(optText))) {
+            const optText = norm(cb.textContent);
+            const shouldCheck = selectedValues.some(sv =>
+              optText === sv || (sv.length >= 4 && optText.includes(sv)) || optText.split(' ').every(w => sv.includes(w))
+            );
+            if (shouldCheck) {
               const isChecked = cb.getAttribute('aria-checked') === 'true';
               if (!isChecked) {
                 cb.click();
-                matched = true;
               }
+              matched = true;
             }
           }
           if (matched) {
@@ -285,19 +306,48 @@
         case 'dropdown': {
           const listbox = block.querySelector('[role="listbox"]');
           if (listbox) {
-            // Click to open dropdown
+            // Click to open the dropdown menu
             listbox.click();
-            setTimeout(() => {
-              const options = document.querySelectorAll('[role="option"], [data-value]');
-              const valueLower = value.toLowerCase().trim();
-              for (const opt of options) {
-                if (opt.textContent.trim().toLowerCase().includes(valueLower)) {
-                  opt.click();
-                  console.log(`[VoiceFill] Selected dropdown "${field.label}" -> "${value}"`);
-                  return;
-                }
+            // Google Forms renders the options menu into an app-level overlay.
+            // Poll for the open menu (a role=listbox containing role=option children)
+            // so we only ever click options that belong to THIS dropdown, never
+            // checkboxes or radios elsewhere on the page.
+            const deadline = Date.now() + 3000;
+            const norm = s => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+            const valueN = norm(value);
+            const trySelect = () => {
+              // Prefer menus that are open role=listbox containers with options;
+              // fall back to any visible role=option (rendered in app-level overlays).
+              let optionEls = [];
+              const menus = Array.from(document.querySelectorAll('[role="listbox"]')).filter(l => l.querySelector('[role="option"]'));
+              for (const menu of menus) optionEls.push(...menu.querySelectorAll('[role="option"]'));
+              if (optionEls.length === 0) {
+                optionEls = Array.from(document.querySelectorAll('[role="option"]')).filter(el => el.getClientRects().length > 0);
               }
-            }, 300);
+              for (const opt of optionEls) {
+                if (norm(opt.textContent) === valueN) { opt.click(); return true; }
+              }
+              for (const opt of optionEls) {
+                const t = norm(opt.textContent);
+                if (valueN.length >= 4 && t && t.includes(valueN)) { opt.click(); return true; }
+              }
+              const words = valueN.split(' ').filter(w => w.length > 2);
+              for (const opt of optionEls) {
+                const t = norm(opt.textContent);
+                if (t && words.some(w => new RegExp(`\\b${w}\\b`).test(t))) { opt.click(); return true; }
+              }
+              return false;
+            };
+            const poll = () => {
+              if (trySelect()) {
+                console.log(`[VoiceFill] Selected dropdown "${field.label}" -> "${value}"`);
+              } else if (Date.now() < deadline) {
+                setTimeout(poll, 150);
+              } else {
+                console.warn(`[VoiceFill] Dropdown option not found for "${field.label}": ${value}`);
+              }
+            };
+            poll();
             return true;
           }
           break;

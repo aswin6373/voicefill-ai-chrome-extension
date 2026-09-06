@@ -8,7 +8,16 @@
 
   // ─── Config ───
   const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-  const TEXT_MODEL = 'llama-3.3-70b-versatile';
+  // Groq retires model IDs over time — resolve an available model at runtime.
+  const MODEL_PREFS = [
+    'llama-3.3-70b-versatile',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-20b',
+  ];
+  let TEXT_MODEL = MODEL_PREFS[0];
+  let modelResolved = false;
 
   // ─── State ───
   let apiKey = '';
@@ -47,6 +56,7 @@
   const micLabel = $('#micLabel');
   const toast = $('#toast');
   const toastText = $('#toastText');
+  const micWarning = $('#micWarning');
 
   // ─── Init ───
   async function init() {
@@ -90,6 +100,26 @@
     resetBtn.addEventListener('click', resetAll);
     saveKeyBtn.addEventListener('click', saveApiKey);
     micBtn.addEventListener('click', toggleListening);
+    micWarning.addEventListener('click', openGrantPage);
+
+    // Mic blocked proactively? Show the fix banner.
+    checkMicPermission();
+  }
+
+  async function checkMicPermission() {
+    try {
+      const st = await navigator.permissions.query({ name: 'microphone' });
+      if (st.state === 'denied') {
+        micWarning.classList.remove('hidden');
+        micBtn.disabled = true;
+      } else if (st.state === 'granted') {
+        micWarning.classList.add('hidden');
+      }
+    } catch (e) { /* permissions API unavailable — onerror path handles it */ }
+  }
+
+  function openGrantPage() {
+    chrome.tabs.create({ url: chrome.runtime.getURL('grant.html'), active: true });
   }
 
   // ─── Settings ───
@@ -252,7 +282,14 @@
 
     rec.onerror = (event) => {
       console.error('[VoiceFill] Speech error:', event.error);
-      if (event.error !== 'no-speech') {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        // Mic permission denied — popups can't show Chrome's Allow prompt,
+        // so open the persistent grant page (user clicks Allow there).
+        setListeningUI(false);
+        setAiMessage('Microphone access is blocked. I opened a setup page — click "Grant Microphone Access" there, allow it, then come back here.');
+        micWarning.classList.remove('hidden');
+        chrome.tabs.create({ url: chrome.runtime.getURL('grant.html'), active: true });
+      } else if (event.error !== 'no-speech') {
         setListeningUI(false);
         showToast('Mic error: ' + event.error, 'error');
       }
@@ -385,6 +422,29 @@
   async function getConversationTurn(userInput) {
     if (!apiKey) throw new Error('No API key');
 
+    // Pick a model that actually exists on this account (Groq retires old IDs)
+    if (!modelResolved) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/models', {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const ids = (data.data || []).map(m => m.id)
+            .filter(id => !/guard|whisper|tts|embed|distil/i.test(id));
+          TEXT_MODEL = MODEL_PREFS.find(p => ids.includes(p))
+            || ids.find(id => /llama|gpt-oss/i.test(id))
+            || ids[0]
+            || TEXT_MODEL;
+        }
+        modelResolved = true;
+        console.log('[VoiceFill] Using Groq model:', TEXT_MODEL);
+      } catch (e) {
+        console.log('[VoiceFill] Model resolution failed, using default:', e.message);
+        modelResolved = true;
+      }
+    }
+
     const fieldList = fields.map(f => {
       let desc = `- ${f.id}: "${f.label}" (type: ${f.type})`;
       if (f.options?.length) desc += ` [options: ${f.options.join(', ')}]`;
@@ -457,6 +517,8 @@ Respond with ONLY valid JSON.`
 
     if (!response.ok) {
       const errText = await response.text();
+      // Model may have been retired since resolution — re-resolve next turn
+      if (/model_not_found|does not exist/i.test(errText)) modelResolved = false;
       throw new Error(`API error ${response.status}: ${errText}`);
     }
 
@@ -570,4 +632,8 @@ Respond with ONLY valid JSON.`
 
   // ─── Boot ───
   document.addEventListener('DOMContentLoaded', init);
+  // Re-check mic permission when returning from the grant page tab
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && micWarning) checkMicPermission();
+  });
 })();
