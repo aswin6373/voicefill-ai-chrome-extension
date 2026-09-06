@@ -174,8 +174,6 @@
           setAiMessage(`Found ${fields.length} questions! Please set your Groq API key first (click ⚙️), then start talking.`);
           micBtn.disabled = true;
         }
-
-        showToast(`Found ${fields.length} fields!`, 'success');
       } else {
         setAiMessage("I couldn't find any form fields. Make sure you're on a Google Form with questions visible, then try again.");
         showToast('No fields detected', 'error');
